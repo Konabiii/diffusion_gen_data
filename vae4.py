@@ -77,16 +77,16 @@ class VAE_model(nn.Module):
         self.beta_kl = beta_kl
         self.encoder = nn.Sequential(
             nn.Conv2d(in_channels, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Conv2d(32, 64, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
         )
         self.conv_mu = nn.Conv2d(64, latent_channels * 2, kernel_size=3, stride=1, padding=1)
         self.decoder_input = nn.Conv2d(latent_channels, 64, kernel_size=3, stride=1, padding=1)
         self.decoder = nn.Sequential(
-            nn.ReLU(),
+            nn.SiLU(),
             nn.ConvTranspose2d(64, 32, kernel_size=4, stride=2, padding=1),
-            nn.ReLU(),
+            nn.SiLU(),
             nn.Conv2d(32, in_channels, kernel_size=3, stride=1, padding=1),
         )
 
