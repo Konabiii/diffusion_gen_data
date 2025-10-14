@@ -38,7 +38,7 @@ from diffusers.utils.torch_utils import is_compiled_module
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-from vae4 import VAE_model
+from vae import VAE
 
 if is_wandb_available():
     import wandb
@@ -56,42 +56,12 @@ DATASET_NAME_MAPPING = {
     "lambdalabs/naruto-blip-captions": ("image", "text"),
 }
 
-def save_model_card(
-    args,
-    repo_id: str,
-    repo_folder: str = None,
-):
-    model_description = f"""
-# Text-to-image finetuning - {repo_id}
-
-This model was finetuned from **{args.pretrained_model_name_or_path}** on a custom dataset. It uses a custom VAE (`VAE_model`) for 1-channel 32x32 inputs.
-"""
-    wandb_info = ""
-    if is_wandb_available() and wandb.run is not None:
-        wandb_info = f"""
-More information on all the CLI arguments and the environment are available on your [`wandb` run page]({wandb.run.url}).
-"""
-    model_description += wandb_info
-
-    model_card = load_or_create_model_card(
-        repo_id_or_path=repo_id,
-        from_training=True,
-        license="creativeml-openrail-m",
-        base_model=args.pretrained_model_name_or_path,
-        model_description=model_description,
-        inference=True,
-    )
-    tags = ["stable-diffusion", "text-to-image", "diffusers", "diffusers-training", "custom-vae"]
-    model_card = populate_model_card(model_card, tags=tags)
-    model_card.save(os.path.join(repo_folder, "README.md"))
-
 def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight_dtype, epoch):
     logger.info("Running validation... ")
 
     vae.eval()
     text_encoder.eval()
     unet.eval()
-    vae.disable_tiling()
 
     validation_prompt = args.validation_prompts[0] if args.validation_prompts else "shape: Ellipse, width: 0.3, length: 2.0, depth: 0.1, angle: 0, x_offset: 0, y_offset: 0"
 
@@ -108,7 +78,7 @@ def log_validation(vae, text_encoder, tokenizer, unet, args, accelerator, weight
         text_embeddings = text_encoder(input_ids)[0]
 
     latents = torch.randn(
-        (1, vae.config['latent_channels'], args.resolution // 4, args.resolution // 4),
+        (1, vae.config['latent_channels'], 4, 4),
         device=accelerator.device,
         dtype=weight_dtype
     )
@@ -464,7 +434,7 @@ def parse_args():
     parser.add_argument(
         "--checkpointing_steps",
         type=int,
-        default=50000,
+        default=10000,
         help="Save a checkpoint every X updates.",
     )
     parser.add_argument(
@@ -592,7 +562,7 @@ def main():
         text_encoder = CLIPTextModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="text_encoder", revision=args.revision, variant=args.variant
         )
-        vae = VAE_model.from_pretrained("/home/dat.lt19010205/CongDuc/diffusers/vae_results4/models")
+        vae = VAE.from_pretrained("/home/dat.lt19010205/CongDuc/diffusers/vae12")
         unet = UNet2DConditionModel.from_pretrained(
             args.pretrained_model_name_or_path, subfolder="unet", revision=args.non_ema_revision
         )
@@ -606,8 +576,7 @@ def main():
     if vae.config['latent_channels'] != unet.config.in_channels:
         raise ValueError(f"VAE latent_channels ({vae.config['latent_channels']}) does not match UNet in_channels ({unet.config.in_channels}).")
 
-    vae.disable_tiling()
-    vae.requires_grad_(True)    
+    vae.requires_grad_(False)    
     text_encoder.requires_grad_(False)
     unet.train()
 
@@ -692,7 +661,7 @@ def main():
         arr = pd.read_csv(csv_path, header=None).values.astype(np.float32)
         if arr.shape != (expected_resolution, expected_resolution):
             raise ValueError(f"CSV file {csv_path} has shape {arr.shape}, expected ({expected_resolution}, {expected_resolution})")
-        tensor = torch.from_numpy(arr).unsqueeze(0)  # Shape: [1, resolution, resolution]
+        tensor = torch.from_numpy(arr).unsqueeze(0) 
         return tensor
 
     if args.dataset_name is not None:
@@ -780,15 +749,26 @@ def main():
 
     interpolation = getattr(transforms.InterpolationMode, args.image_interpolation_mode.upper())
     train_transforms = transforms.Compose([
-        transforms.Resize(args.resolution, interpolation=interpolation),
-        transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
-        transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
+    transforms.Resize(args.resolution, interpolation=interpolation),
+    transforms.CenterCrop(args.resolution) if args.center_crop else transforms.RandomCrop(args.resolution),
+    transforms.RandomHorizontalFlip() if args.random_flip else transforms.Lambda(lambda x: x),
     ])
 
     def preprocess_train(examples):
         csv_paths = examples[image_column]
-        images = [load_csv_as_tensor(path, args.resolution) for path in csv_paths]
-        images = [train_transforms(img) for img in images]
+        captions = examples[caption_column]
+        images = []
+
+        for i, path in enumerate(csv_paths):
+            current_caption = captions[i]
+            
+            # if i < 3 and accelerator.is_main_process: 
+            #     logger.info(f"DEBUG DATA PAIRING | CSV File: '{os.path.basename(path)}', Text: '{current_caption}'")
+
+            img_tensor = load_csv_as_tensor(path, args.resolution)
+            transformed_img = train_transforms(img_tensor)
+            images.append(transformed_img)
+
         examples["pixel_values"] = images
         examples["input_ids"] = tokenize_captions(examples)
         return examples
@@ -908,12 +888,23 @@ def main():
     for epoch in range(first_epoch, args.num_train_epochs):
         train_loss = 0.0
         for step, batch in enumerate(train_dataloader):
+            # START: DEBUG CODE BLOCK
+            # if step == 0 and accelerator.is_main_process:
+            #     try:
+            #         first_input_ids = batch["input_ids"][0]
+            #         decoded_text = tokenizer.decode(first_input_ids, skip_special_tokens=True)
+            #         logger.info("="*60)
+            #         logger.info("DEBUG: VERIFYING TEXT INPUT TO CLIP TEXT ENCODER (Epoch {})".format(epoch))
+            #         logger.info(f"  -> Input IDs (first sample): {first_input_ids.tolist()}")
+            #         logger.info(f"  -> Decoded Text from IDs: '{decoded_text.strip()}'")
+            #         logger.info("="*60)
+            #     except Exception as e:
+            #         logger.warning(f"DEBUG: Could not decode input_ids for verification. Error: {e}")
+            # END: DEBUG CODE BLOCK
+
             with accelerator.accumulate(unet):
-                pixel_values = batch["pixel_values"].to(accelerator.device, dtype=weight_dtype)
-                latent_dist = vae.encode(pixel_values)
-                latents = latent_dist.sample()
-                if latents.shape[2:] != (args.resolution // 4, args.resolution // 4):
-                    raise ValueError(f"Latents shape {latents.shape[2:]} does not match expected ({args.resolution // 4}, {args.resolution // 4})")
+                latent_mean, latent_logvar = vae.encode(batch["pixel_values"].to(weight_dtype))
+                latents = vae.reparameterize(latent_mean, latent_logvar)
 
                 noise = torch.randn_like(latents)
                 if args.noise_offset:
@@ -1022,45 +1013,47 @@ def main():
                 if global_step >= args.max_train_steps:
                     break
 
-            if accelerator.is_main_process and args.validation_prompts is not None and (epoch % args.validation_epochs == 0 or epoch == args.num_train_epochs - 1):
-                if args.use_ema:
-                    ema_unet.store(unet.parameters())
-                    ema_unet.copy_to(unet.parameters())
-                log_validation(
-                    vae,
-                    text_encoder,
-                    tokenizer,
-                    unet,
-                    args,
-                    accelerator,
-                    weight_dtype,
-                    epoch,
-                )
-                if args.use_ema:
-                    ema_unet.restore(unet.parameters())
-
-        accelerator.wait_for_everyone()
-        if accelerator.is_main_process:
-            unet = unwrap_model(unet)
+        if accelerator.is_main_process and args.validation_prompts is not None and (epoch % args.validation_epochs == 0 or epoch == args.num_train_epochs - 1):
             if args.use_ema:
+                ema_unet.store(unet.parameters())
                 ema_unet.copy_to(unet.parameters())
+            log_validation(
+                vae,
+                text_encoder,
+                tokenizer,
+                unet,
+                args,
+                accelerator,
+                weight_dtype,
+                epoch,
+            )
+            if args.use_ema:
+                ema_unet.restore(unet.parameters())
 
-            os.makedirs(args.output_dir, exist_ok=True)
-            
-            unet.save_pretrained(os.path.join(args.output_dir, "unet"))
-            text_encoder.save_pretrained(os.path.join(args.output_dir, "text_encoder"))
-            vae.save_pretrained(os.path.join(args.output_dir, "vae"))
-            tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
-            noise_scheduler.save_pretrained(os.path.join(args.output_dir, "scheduler"))
+        if global_step >= args.max_train_steps:
+            break
 
-            if args.push_to_hub:
-                save_model_card(args, repo_id, repo_folder=args.output_dir)
-                upload_folder(
-                    repo_id=repo_id,
-                    folder_path=args.output_dir,
-                    commit_message="End of training",
-                    ignore_patterns=["step_*", "epoch_*"],
-                )
+    accelerator.wait_for_everyone()
+    if accelerator.is_main_process:
+        unet = unwrap_model(unet)
+        if args.use_ema:
+            ema_unet.copy_to(unet.parameters())
+
+        os.makedirs(args.output_dir, exist_ok=True)
+        
+        unet.save_pretrained(os.path.join(args.output_dir, "unet"))
+        text_encoder.save_pretrained(os.path.join(args.output_dir, "text_encoder"))
+        vae.save_pretrained(os.path.join(args.output_dir, "vae"))
+        tokenizer.save_pretrained(os.path.join(args.output_dir, "tokenizer"))
+        noise_scheduler.save_pretrained(os.path.join(args.output_dir, "scheduler"))
+
+        if args.push_to_hub:
+            upload_folder(
+                repo_id=repo_id,
+                folder_path=args.output_dir,
+                commit_message="End of training",
+                ignore_patterns=["step_*", "epoch_*"],
+            )
 
     accelerator.end_training()
 
