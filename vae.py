@@ -210,166 +210,6 @@ class VAE(nn.Module):
         mu, logvar = self.encode(x)
         return mu if deterministic else self.reparameterize(mu, logvar, normalize_latent)
 
-# # ======================
-# # Self-Attention 2D
-# # ======================
-# class SelfAttention2D(nn.Module):
-#     def __init__(self, channels, num_heads=4):
-#         super().__init__()
-#         self.norm = nn.GroupNorm(8 if channels % 8 == 0 else 1, channels)
-#         self.qkv = nn.Conv2d(channels, channels * 3, 1)
-#         self.proj = nn.Conv2d(channels, channels, 1)
-#         self.num_heads = num_heads
-
-#     def forward(self, x):
-#         b, c, h, w = x.shape
-#         x_norm = self.norm(x)
-#         q, k, v = self.qkv(x_norm).chunk(3, dim=1)
-
-#         # multi-head reshape
-#         q = q.view(b, self.num_heads, c // self.num_heads, h * w)
-#         k = k.view(b, self.num_heads, c // self.num_heads, h * w)
-#         v = v.view(b, self.num_heads, c // self.num_heads, h * w)
-
-#         attn = torch.einsum("bhcn,bhcm->bhnm", q, k) / math.sqrt(c // self.num_heads)
-#         attn = F.softmax(attn, dim=-1)
-
-#         out = torch.einsum("bhnm,bhcm->bhcn", attn, v)
-#         out = out.reshape(b, c, h, w)
-#         return self.proj(out) + x
-
-
-# # ======================
-# # ResBlock (improved)
-# # ======================
-# class ResBlock(nn.Module):
-#     def __init__(self, channels, dropout=0.1):
-#         super().__init__()
-#         self.block = nn.Sequential(
-#             nn.Conv2d(channels, channels, 3, padding=1),
-#             nn.GroupNorm(8 if channels % 8 == 0 else 1, channels),
-#             nn.SiLU(),
-#             nn.Dropout(dropout),
-#             nn.Conv2d(channels, channels, 3, padding=1),
-#         )
-
-#     def forward(self, x):
-#         return self.block(x) + x
-
-
-# # ======================
-# # Encoder (tăng ResBlock)
-# # ======================
-# class Encoder(nn.Module):
-#     def __init__(self, in_channels=1, latent_channels=4):
-#         super().__init__()
-#         self.conv1 = nn.Sequential(
-#             nn.Conv2d(in_channels, 32, 4, 2, 1),
-#             nn.SiLU(),
-#             ResBlock(32),
-#             ResBlock(32),   # thêm 1 ResBlock
-#         )
-#         self.conv2 = nn.Sequential(
-#             nn.Conv2d(32, 64, 4, 2, 1),
-#             nn.SiLU(),
-#             ResBlock(64),
-#             ResBlock(64),
-#             SelfAttention2D(64),   # attention ở mid layer
-#         )
-#         self.conv3 = nn.Sequential(
-#             nn.Conv2d(64, 128, 4, 2, 1),
-#             nn.SiLU(),
-#             ResBlock(128),
-#             ResBlock(128),   # thêm 1 ResBlock
-#         )
-#         self.conv_mu = nn.Conv2d(128, latent_channels, 1)
-#         self.conv_logvar = nn.Conv2d(128, latent_channels, 1)
-
-#     def forward(self, x):
-#         h = self.conv1(x)
-#         h = self.conv2(h)
-#         h = self.conv3(h)
-#         mu = self.conv_mu(h)
-#         logvar = self.conv_logvar(h)
-#         logvar = torch.clamp(logvar, -20, 10)
-#         return mu, logvar
-
-
-# # ======================
-# # Decoder (tăng ResBlock)
-# # ======================
-# class Decoder(nn.Module):
-#     def __init__(self, out_channels=1, latent_channels=4):
-#         super().__init__()
-#         self.proj = nn.Conv2d(latent_channels, 128, 1)
-#         self.deconv1 = nn.Sequential(
-#             nn.ConvTranspose2d(128, 64, 4, 2, 1),
-#             nn.SiLU(),
-#             ResBlock(64),
-#             ResBlock(64),   # thêm ResBlock
-#             SelfAttention2D(64),
-#         )
-#         self.deconv2 = nn.Sequential(
-#             nn.ConvTranspose2d(64, 32, 4, 2, 1),
-#             nn.SiLU(),
-#             ResBlock(32),
-#             ResBlock(32),   # thêm ResBlock
-#         )
-#         self.deconv3 = nn.Sequential(
-#             nn.ConvTranspose2d(32, out_channels, 4, 2, 1),
-#         )
-
-#     def forward(self, z):
-#         h = self.proj(z)
-#         h = self.deconv1(h)
-#         h = self.deconv2(h)
-#         out = self.deconv3(h)
-#         return out
-
-
-# # ======================
-# # VAE wrapper
-# # ======================
-# class VAE(nn.Module):
-#     def __init__(self, in_channels=1, latent_channels=4, sample_size=32):
-#         super().__init__()
-#         self.encoder = Encoder(in_channels, latent_channels)
-#         self.decoder = Decoder(in_channels, latent_channels)
-#         self.latent_channels = latent_channels
-#         self.sample_size = sample_size
-#         self.latent_spatial = sample_size // 8  # 32//8=4
-
-#         self.config = {
-#             "in_channels": in_channels,
-#             "latent_channels": latent_channels,
-#             "sample_size": sample_size
-#         }
-
-#     def encode(self, x):
-#         return self.encoder(x)
-
-#     def reparameterize(self, mu, logvar):
-#         std = torch.exp(0.5 * logvar)
-#         eps = torch.randn_like(std)
-#         return mu + eps * std
-
-#     def decode(self, z, apply_sigmoid=False):
-#         out = self.decoder(z)
-#         if apply_sigmoid:
-#             out = torch.sigmoid(out)
-#         return out
-
-#     def forward(self, x, apply_sigmoid=False):
-#         mu, logvar = self.encode(x)
-#         z = self.reparameterize(mu, logvar)
-#         x_recon = self.decode(z, apply_sigmoid)
-#         return x_recon, mu, logvar
-
-
-#     def get_latent(self, x, deterministic=False):
-#         mu, logvar = self.encode(x)
-#         return mu if deterministic else self.reparameterize(mu, logvar)
-
     def save_pretrained(self, save_directory):
         os.makedirs(save_directory, exist_ok=True)
         state_dict = self.state_dict()
@@ -425,9 +265,6 @@ class VAE(nn.Module):
             model.load_state_dict(loaded_state, strict=False)
         return model
 
-# ======================
-# Dataset (CSV -> 32x32)
-# ======================
 class CSVDataset2D(Dataset):
     def __init__(self, csv_folder: str, input_shape=(32, 32)):
         self.label_names = ["ellipse", "rectangular", "step_r", "step_t", "triangular"]
@@ -518,9 +355,7 @@ def get_beta(epoch, beta_start=0.1, beta_end=0.2, warmup_epochs=40):
 #     # sigmoid schedule (tăng chậm lúc đầu, nhanh dần sau)
 #     return beta_start + (beta_end - beta_start) * (1 / (1 + np.exp(-10 * (progress - 0.5))))
 
-# ======================
-# Metrics helpers
-# ======================
+
 def compute_psnr(original, reconstructed, max_val=1.0):
     mse = ((original - reconstructed) ** 2).mean()
     if mse == 0:
@@ -565,9 +400,6 @@ def save_reconstruction(original, reconstructed, epoch, save_dir="figures_2d"):
     plt.savefig(os.path.join(save_dir, f"reconstruction_epoch{epoch}.png"))
     plt.close()
 
-# ======================
-# Main training + eval
-# ======================
 def main():
     save_dir = "./vae12"
     os.makedirs(save_dir, exist_ok=True)
@@ -710,9 +542,6 @@ def main():
     except Exception:
         pass
 
-    # ======================
-    # Final evaluation & latent analysis
-    # ======================
     model.eval()
     all_mse = []
     all_psnr = []
@@ -749,7 +578,7 @@ def main():
                 pear = compute_pearson(original, reconstructed)
                 dtw_dist = compute_dtw(original, reconstructed)
                 fft_mse = compute_fft_mse(original, reconstructed)
-                all_mse.append(mse)            # <-- Thêm dòng này
+                all_mse.append(mse)          
                 all_psnr.append(psnr)
                 all_pearson.append(pear)
                 all_dtw.append(dtw_dist)
@@ -803,7 +632,6 @@ def main():
     else:
         print("No latent data for PCA/histogram.")
 
-    # bar chart metrics
     metrics = {
         "MSE": avg_mse,
         "DTW": avg_dtw,
