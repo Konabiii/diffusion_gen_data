@@ -29,7 +29,6 @@ except Exception:
     def pearsonr(a, b):
         return (np.nan, np.nan)
 
-# optional safetensors
 try:
     from safetensors.torch import save_file as safetensors_save
     from safetensors.torch import load_file as safetensors_load
@@ -40,7 +39,6 @@ except Exception:
 def try_import_dtw():
     try:
         import dtaidistance.dtw as dtaid_tw
-        # use pruning fast implementation if available
         return lambda x, y: dtaid_tw.distance_fast(x, y, use_pruning=True)
     except Exception:
         try:
@@ -85,10 +83,6 @@ class SelfAttention2D(nn.Module):
         out = torch.einsum("bhnm,bhcm->bhcn", attn, v)
         out = out.reshape(b, c, h, w)
         return self.proj(out) + x
-
-# ======================
-# ResBlock
-# ======================
 class ResBlock(nn.Module):
     def __init__(self, channels, dropout=0.1):
         super().__init__()
@@ -103,9 +97,6 @@ class ResBlock(nn.Module):
     def forward(self, x):
         return self.block(x) + x
 
-# ======================
-# Encoder
-# ======================
 class Encoder(nn.Module):
     def __init__(self, in_channels=1, latent_channels=4):
         super().__init__()
@@ -140,9 +131,6 @@ class Encoder(nn.Module):
         logvar = torch.clamp(self.conv_logvar(h), -20, 10)
         return mu, logvar
 
-# ======================
-# Decoder
-# ======================
 class Decoder(nn.Module):
     def __init__(self, out_channels=1, latent_channels=4):
         super().__init__()
